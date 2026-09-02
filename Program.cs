@@ -13,6 +13,7 @@ using System.Linq;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.ReplyMarkups;
+using System.Runtime.InteropServices;
 
 namespace VelvetVpnAutomator
 {
@@ -70,12 +71,18 @@ namespace VelvetVpnAutomator
 
             // 2. ЗАПУСКАЕМ БРАУЗЕР (HEADLESS ДЛЯ GITHUB ACTIONS)
             var options = new ChromeOptions();
-            options.AddArgument("--disable-gpu");
-            options.AddArgument("--no-sandbox");
-            options.AddArgument("--headless=new");
-            options.AddArgument("--disable-blink-features=AutomationControlled");
-            options.AddExcludedArgument("enable-automation");
-            options.AddAdditionalOption("useAutomationExtension", false);
+options.AddArgument("--disable-gpu");
+options.AddArgument("--no-sandbox");
+options.AddArgument("--headless");  // обязательно для GitHub Actions
+options.AddArgument("--disable-blink-features=AutomationControlled");
+options.AddExcludedArgument("enable-automation");
+options.AddAdditionalOption("useAutomationExtension", false);
+
+// Linux путь (для GitHub Actions)
+if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+{
+    options.BinaryLocation = "/usr/bin/chromium-browser";
+}
 
             using var driver = new ChromeDriver(options);
             var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(30));
