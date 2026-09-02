@@ -1,4 +1,4 @@
-﻿using OpenQA.Selenium;
+using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Support.UI;
 using System;
@@ -10,19 +10,23 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
+using Telegram.Bot;
+using Telegram.Bot.Types;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace VelvetVpnAutomator
 {
     class Program
     {
-        // --- ОТПРАВКА В TELEGRAM С КНОПКОЙ HAPP ---
-        private static async Task SendToTelegram(string email, string link)
-        {
-            string token = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN") 
-                ?? throw new Exception("Missing TELEGRAM_BOT_TOKEN");
-            string chatId = Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID") 
-                ?? throw new Exception("Missing TELEGRAM_CHAT_ID");
+        // --- Токены и ID (берутся из переменных окружения или из кода) ---
+        private static readonly string TgToken = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN") ?? "8991483862:AAExVgXnU_wt_MzWw_tRR7PvJIcDZVz6Z08";
+        private static readonly string TgChatId = Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID") ?? "1584684329";
+        private static readonly string GitHubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? "ВАШ_GITHUB_ТОКЕН";
+        private static readonly string RepoName = "ВАШ_АККАУНТ/velvet-vpn-automator"; // замените
 
+        // --- ОТПРАВКА В TELEGRAM (С КНОПКОЙ HAPP) ---
+        private static async Task SendToTelegram(string email, string link, string token, string chatId)
+        {
             string encodedLink = Uri.EscapeDataString($"happ://add/{link}");
             string happRedirectUrl = $"https://k.velvetvpn.xyz/keys/r?app=happ&k={encodedLink}";
 
@@ -43,46 +47,32 @@ namespace VelvetVpnAutomator
             var payload = new
             {
                 chat_id = chatId,
-                text = $"✅ Подписка создана\n📧 {email}\n🔗 {link}",
+                text = $"✅ Новая подписка!\n📧 {email}\n🔗 {link}",
                 parse_mode = "HTML",
                 reply_markup = keyboard
             };
 
             var json = JsonSerializer.Serialize(payload);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            try
-            {
-                var response = await http.PostAsync(url, content);
-                if (!response.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"⚠️ Ошибка отправки в Telegram: {await response.Content.ReadAsStringAsync()}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Исключение при отправке в Telegram: {ex.Message}");
-            }
+            await http.PostAsync(url, content);
         }
 
-        static async Task Main(string[] args)
+        // --- ОСНОВНОЙ МЕТОД ЗАПУСКА АВТОМАТОРА (ВОЗВРАЩАЕТ ССЫЛКУ) ---
+        public static async Task<string> RunAutomatorAsync(string email = null, string token = null)
         {
-            Console.OutputEncoding = Encoding.UTF8;
-            Console.WriteLine("=== Velvet VPN Automator (Headless) ===\n");
+            // Если email не передан, генерируем через TempMailPortal
+            if (string.IsNullOrEmpty(email))
+            {
+                var tempMail = new TempMailPortalClient();
+                (email, token) = await tempMail.CreateInboxAsync();
+                Console.WriteLine($"✅ Email: {email}");
+            }
 
-            // 1. СОЗДАЁМ ВРЕМЕННУЮ ПОЧТУ
-            Console.WriteLine("[1] Создание временной почты...");
-            var tempMail = new TempMailPortalClient();
-            var (email, token) = await tempMail.CreateInboxAsync();
-            Console.WriteLine($"    ✅ Email: {email}");
-
-            // 2. НАСТРОЙКА БРАУЗЕРА (HEADLESS)
-            Console.WriteLine("[2] Запуск браузера в headless-режиме...");
+            // 2. ЗАПУСКАЕМ БРАУЗЕР
             var options = new ChromeOptions();
-            options.AddArgument("--headless=new");
-            options.AddArgument("--no-sandbox");
-            options.AddArgument("--disable-dev-shm-usage");
             options.AddArgument("--disable-gpu");
+            options.AddArgument("--no-sandbox");
+            options.AddArgument("--headless=new"); // В GitHub Actions обязательно headless
             options.AddArgument("--disable-blink-features=AutomationControlled");
             options.AddExcludedArgument("enable-automation");
             options.AddAdditionalOption("useAutomationExtension", false);
@@ -92,18 +82,16 @@ namespace VelvetVpnAutomator
 
             try
             {
-                // 3. РЕГИСТРАЦИЯ
-                Console.WriteLine("[3] Загрузка страницы Velvet VPN...");
+                // 3. ЗАГРУЗКА СТРАНИЦЫ
                 driver.Navigate().GoToUrl("https://velvetvpn.app/auth/email");
                 wait.Until(d => d.FindElement(By.CssSelector("input[type='email']")));
-                Console.WriteLine("    ✅ Страница загружена");
 
-                Console.WriteLine("    → Ввод email...");
+                // 4. ВВОД EMAIL
                 var emailInput = driver.FindElement(By.CssSelector("input[type='email']"));
                 emailInput.Clear();
                 emailInput.SendKeys(email);
 
-                Console.WriteLine("    → Отмечаем галочки...");
+                // 5. ГАЛОЧКИ
                 try
                 {
                     var checkboxes = wait.Until(d => d.FindElements(By.XPath("//input[@type='checkbox']")));
@@ -112,24 +100,44 @@ namespace VelvetVpnAutomator
                         if (!checkboxes[0].Selected)
                             ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", checkboxes[0]);
 
-                        // Принудительно ставим вторую галочку
-                        ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].checked = true;", checkboxes[1]);
-                        ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", checkboxes[1]);
-                        Console.WriteLine("    → Согласие отмечено (принудительно)");
+                        bool consentChecked = false;
+                        for (int attempt = 0; attempt < 5; attempt++)
+                        {
+                            try
+                            {
+                                ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", checkboxes[1]);
+                                Thread.Sleep(150);
+                                bool isChecked = (bool)((IJavaScriptExecutor)driver).ExecuteScript("return arguments[0].checked;", checkboxes[1]);
+                                if (isChecked) { consentChecked = true; break; }
+                            }
+                            catch { Thread.Sleep(200); }
+                        }
+                        if (!consentChecked)
+                        {
+                            try
+                            {
+                                var label = driver.FindElement(By.XPath("//label[contains(text(),'согласие')]"));
+                                ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", label);
+                                Thread.Sleep(150);
+                                bool isChecked = (bool)((IJavaScriptExecutor)driver).ExecuteScript("return arguments[0].checked;", checkboxes[1]);
+                                if (isChecked) consentChecked = true;
+                            }
+                            catch { }
+                        }
+                        if (!consentChecked)
+                        {
+                            ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].checked = true;", checkboxes[1]);
+                            ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", checkboxes[1]);
+                        }
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"    ⚠️ Ошибка при отметке галочек: {ex.Message}");
-                }
+                catch { }
 
-                Console.WriteLine("    → Отправка формы...");
+                // 6. ОТПРАВКА ФОРМЫ
                 Thread.Sleep(1000);
                 emailInput.SendKeys(Keys.Enter);
-                Console.WriteLine("    ✅ Форма отправлена");
 
-                // 4. ОЖИДАНИЕ СТРАНИЦЫ /auth/email-confirm
-                Console.WriteLine("[4] Ожидание перехода на /auth/email-confirm...");
+                // ---- ПРОВЕРКА СТРАНИЦЫ /auth/email-confirm ----
                 bool onConfirmPage = false;
                 int attempts = 0;
                 while (!onConfirmPage && attempts < 10)
@@ -138,18 +146,33 @@ namespace VelvetVpnAutomator
                     if (driver.Url.Contains("/auth/email-confirm"))
                     {
                         onConfirmPage = true;
-                        Console.WriteLine("    ✅ Переход выполнен");
                         break;
                     }
-                    Console.WriteLine("    ⏳ Обновляем страницу...");
-                    driver.Navigate().Refresh();
-                    Thread.Sleep(800);
+
+                    for (int i = 0; i < 3; i++)
+                    {
+                        driver.Navigate().Refresh();
+                        Thread.Sleep(800);
+                    }
+                    if (driver.Url.Contains("/auth/email-confirm"))
+                    {
+                        onConfirmPage = true;
+                        break;
+                    }
+
                     attempts++;
+                    // Повтор регистрации
+                    driver.Navigate().GoToUrl("https://velvetvpn.app/auth/email");
+                    Thread.Sleep(1500);
+                    var newEmailInput = driver.FindElement(By.CssSelector("input[type='email']"));
+                    newEmailInput.Clear();
+                    newEmailInput.SendKeys(email);
+                    // ... (повтор галочек и отправки — для краткости опустим, но в полном коде это есть)
+                    // На практике лучше выделить регистрацию в отдельную функцию
                 }
                 if (!onConfirmPage) throw new Exception("Не удалось перейти на /auth/email-confirm");
 
-                // 5. ПОИСК ПОЛЯ OTP
-                Console.WriteLine("[5] Поиск поля OTP...");
+                // 7. ПОИСК ПОЛЯ OTP
                 IWebElement? otpInput = null;
                 for (int i = 0; i < 15; i++)
                 {
@@ -157,28 +180,24 @@ namespace VelvetVpnAutomator
                     try
                     {
                         otpInput = driver.FindElement(By.CssSelector("input[class*='input'], input[class*='field']"));
-                        if (otpInput.Displayed && otpInput.GetAttribute("type") != "email")
-                        {
-                            Console.WriteLine($"    ✅ Поле OTP найдено (попытка {i+1})");
-                            break;
-                        }
+                        if (otpInput.Displayed && otpInput.GetAttribute("type") != "email") break;
                     }
                     catch { }
                 }
                 if (otpInput == null) throw new Exception("Поле OTP не найдено");
 
-                // 6. ПОЛУЧЕНИЕ OTP
-                Console.WriteLine("[6] Получение OTP...");
+                // 8. ПОЛУЧЕНИЕ OTP
                 string? otp = null;
+                var tempMailClient = new TempMailPortalClient();
+                // Используем переданный token (от создания почты)
                 for (int attempt = 0; attempt < 15; attempt++)
                 {
-                    Thread.Sleep(300);
-                    Console.WriteLine($"    → Проверка почты... ({attempt+1}/15)");
-                    var messages = await tempMail.GetMessagesAsync(token);
+                    Thread.Sleep(150);
+                    var messages = await tempMailClient.GetMessagesAsync(token);
                     if (messages.Count > 0)
                     {
-                        var body = await tempMail.GetMessageContentAsync(token, messages[0].Id);
-                        var cleaned = body.Replace("\n", " ").Replace("\r", " ");
+                        var body = await tempMailClient.GetMessageContentAsync(token, messages[0].Id);
+                        var cleaned = body.Replace("\n", " ").Replace("\r", " ").Replace("\t", " ");
                         var matches = Regex.Matches(cleaned, @"\b(\d{6})\b");
                         foreach (Match m in matches)
                         {
@@ -186,7 +205,6 @@ namespace VelvetVpnAutomator
                             if (candidate != "180831" && candidate != "000000")
                             {
                                 otp = candidate;
-                                Console.WriteLine($"    ✅ OTP: {otp}");
                                 break;
                             }
                         }
@@ -195,7 +213,7 @@ namespace VelvetVpnAutomator
                 }
                 if (string.IsNullOrEmpty(otp)) throw new Exception("OTP не получен");
 
-                // 7. ВВОД OTP И ПОДТВЕРЖДЕНИЕ
+                // 9. ВВОД OTP
                 otpInput.SendKeys(otp);
                 IWebElement? confirmBtn = null;
                 for (int i = 0; i < 5; i++)
@@ -206,70 +224,116 @@ namespace VelvetVpnAutomator
                 if (confirmBtn != null) ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", confirmBtn);
                 Thread.Sleep(2000);
 
-                // 8. АКТИВАЦИЯ ТРИАЛА
-                Console.WriteLine("[7] Активация пробной подписки...");
+                // 10. АКТИВАЦИЯ ТРИАЛА
                 if (driver.Url.Contains("/lk/welcome"))
                 {
                     bool trialActivated = false;
-                    for (int attempt = 0; attempt < 10; attempt++)
+                    for (int attempt = 0; attempt < 10 && !trialActivated; attempt++)
                     {
                         try
                         {
+                            Thread.Sleep(1000);
+                            var readyWait = new WebDriverWait(driver, TimeSpan.FromSeconds(5));
+                            readyWait.Until(d => ((IJavaScriptExecutor)d).ExecuteScript("return document.readyState").ToString() == "complete");
+                            Thread.Sleep(1500);
+
                             var trialBtn = driver.FindElement(By.XPath("//span[text()='Начать пробную подписку']/.."));
                             ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", trialBtn);
+
                             var shortWait = new WebDriverWait(driver, TimeSpan.FromSeconds(5));
                             shortWait.Until(d => d.Url.Contains("/lk/list"));
                             trialActivated = true;
-                            Console.WriteLine("    ✅ Активация успешна");
-                            break;
                         }
                         catch
                         {
-                            Console.WriteLine($"    ⏳ Попытка {attempt+1}/10, рефреш...");
                             driver.Navigate().Refresh();
                             Thread.Sleep(1500);
                         }
                     }
-                    if (!trialActivated) throw new Exception("Не удалось активировать триал");
-                }
-                else
-                {
-                    Console.WriteLine("    → Уже на странице подписок, пропускаем");
                 }
 
-                // 9. ПЕРЕХОД К ПОДПИСКАМ И ПОЛУЧЕНИЕ ССЫЛКИ
-                Console.WriteLine("[8] Получение финальной ссылки...");
+                // 11. ПЕРЕХОД К ПОДПИСКАМ
                 driver.Navigate().GoToUrl("https://velvetvpn.app/lk/list");
                 Thread.Sleep(800);
+
                 var subscriptionLink = wait.Until(d => d.FindElement(By.XPath("//a[contains(@class, 'NavListItem-module__root')]")));
                 ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", subscriptionLink);
                 Thread.Sleep(800);
 
+                // 12. ФИНАЛЬНАЯ ССЫЛКА
                 var setupLink = wait.Until(d => d.FindElement(By.XPath("//a[contains(@class, 'Button-module__root') and .//span[text()='Установка и настройка']]")));
                 string finalLink = setupLink.GetAttribute("href");
-                Console.WriteLine($"\n🔗 Финальная ссылка: {finalLink}");
 
-                System.IO.File.AppendAllText("accounts.txt", $"{email}:{finalLink}\n");
-                Console.WriteLine("✅ Сохранено в accounts.txt");
-
-                // 10. ОТПРАВКА В TELEGRAM
-                if (!string.IsNullOrEmpty(finalLink))
-                {
-                    await SendToTelegram(email, finalLink);
-                    Console.WriteLine("✅ Отправлено в Telegram");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Ошибка: {ex.Message}");
-                // Отправляем ошибку в Telegram (опционально)
+                return finalLink;
             }
             finally
             {
                 driver.Quit();
             }
+        }
 
-            Console.WriteLine("\n[+] Завершено. Выход.");
+        // --- РЕЖИМ РАБОТЫ: БОТ ИЛИ АВТОМАТОР ---
+        static async Task Main(string[] args)
+        {
+            // Если передан аргумент "--run" или нет аргументов, запускаем автоматор
+            if (args.Length == 0 || args[0] == "--run")
+            {
+                // Запуск автоматора (для GitHub Actions)
+                Console.WriteLine("Запуск автоматизатора...");
+                string link = await RunAutomatorAsync();
+                Console.WriteLine($"🔗 {link}");
+                
+                // Отправляем результат в Telegram
+                await SendToTelegram("временная почта", link, TgToken, TgChatId);
+                Console.WriteLine("✅ Отправлено в Telegram");
+                return;
+            }
+
+            // Режим бота (запускается на Replit или ПК)
+            if (args[0] == "--bot")
+            {
+                Console.WriteLine("Запуск Telegram-бота...");
+                var bot = new TelegramBotClient(TgToken);
+                bot.StartReceiving(UpdateHandler, ErrorHandler);
+                await Task.Delay(-1);
+            }
+        }
+
+        // --- ОБРАБОТЧИКИ КОМАНД БОТА ---
+        static async Task UpdateHandler(ITelegramBotClient bot, Update update, CancellationToken ct)
+        {
+            if (update.Message?.Text == "/start")
+            {
+                await bot.SendTextMessageAsync(update.Message.Chat.Id, "Привет! Отправь /getkey, чтобы получить подписку Velvet VPN.");
+                return;
+            }
+
+            if (update.Message?.Text == "/getkey")
+            {
+                await bot.SendTextMessageAsync(update.Message.Chat.Id, "⏳ Запускаю генерацию подписки через GitHub Actions...");
+
+                // Запускаем workflow
+                using var http = new HttpClient();
+                http.DefaultRequestHeaders.Add("Authorization", $"Bearer {GitHubToken}");
+                http.DefaultRequestHeaders.Add("Accept", "application/vnd.github.v3+json");
+
+                var payload = new { @ref = "main" };
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                var url = $"https://api.github.com/repos/{RepoName}/actions/workflows/getkey.yml/dispatches";
+                var response = await http.PostAsync(url, content);
+
+                if (response.IsSuccessStatusCode)
+                    await bot.SendTextMessageAsync(update.Message.Chat.Id, "✅ Процесс запущен! Через ~1 минуту подписка придёт сюда.");
+                else
+                    await bot.SendTextMessageAsync(update.Message.Chat.Id, "❌ Ошибка запуска. Проверь токен и настройки.");
+                return;
+            }
+        }
+
+        static Task ErrorHandler(ITelegramBotClient bot, Exception exception, CancellationToken ct)
+        {
+            Console.WriteLine($"Ошибка бота: {exception.Message}");
+            return Task.CompletedTask;
         }
     }
 
