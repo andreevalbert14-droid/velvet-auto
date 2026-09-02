@@ -18,13 +18,13 @@ namespace VelvetVpnAutomator
 {
     class Program
     {
-        // --- Токены и ID (берутся из переменных окружения или из кода) ---
+        // --- ЧТЕНИЕ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (СЕКРЕТОВ) ---
         private static readonly string TgToken = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN") ?? "8991483862:AAExVgXnU_wt_MzWw_tRR7PvJIcDZVz6Z08";
         private static readonly string TgChatId = Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID") ?? "1584684329";
-        private static readonly string GitHubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? "ВАШ_GITHUB_ТОКЕН";
-        private static readonly string RepoName = "ВАШ_АККАУНТ/velvet-vpn-automator"; // замените
+        private static readonly string GitHubToken = Environment.GetEnvironmentVariable("GH_TOKEN") ?? "ВАШ_GITHUB_ТОКЕН";
+        private static readonly string RepoName = "andreevalbert14-droid/velvet-auto"; // ЗАМЕНИТЕ НА СВОЙ
 
-        // --- ОТПРАВКА В TELEGRAM (С КНОПКОЙ HAPP) ---
+        // --- ОТПРАВКА В TELEGRAM С КНОПКОЙ HAPP (ЧЕРЕЗ РЕДИРЕКТОР) ---
         private static async Task SendToTelegram(string email, string link, string token, string chatId)
         {
             string encodedLink = Uri.EscapeDataString($"happ://add/{link}");
@@ -47,7 +47,7 @@ namespace VelvetVpnAutomator
             var payload = new
             {
                 chat_id = chatId,
-                text = $"✅ Новая подписка!\n📧 {email}\n🔗 {link}",
+                text = $"✅ Новая подписка Velvet VPN!\n📧 {email}\n🔗 {link}",
                 parse_mode = "HTML",
                 reply_markup = keyboard
             };
@@ -68,11 +68,11 @@ namespace VelvetVpnAutomator
                 Console.WriteLine($"✅ Email: {email}");
             }
 
-            // 2. ЗАПУСКАЕМ БРАУЗЕР
+            // 2. ЗАПУСКАЕМ БРАУЗЕР (HEADLESS ДЛЯ GITHUB ACTIONS)
             var options = new ChromeOptions();
             options.AddArgument("--disable-gpu");
             options.AddArgument("--no-sandbox");
-            options.AddArgument("--headless=new"); // В GitHub Actions обязательно headless
+            options.AddArgument("--headless=new");
             options.AddArgument("--disable-blink-features=AutomationControlled");
             options.AddExcludedArgument("enable-automation");
             options.AddAdditionalOption("useAutomationExtension", false);
@@ -91,7 +91,7 @@ namespace VelvetVpnAutomator
                 emailInput.Clear();
                 emailInput.SendKeys(email);
 
-                // 5. ГАЛОЧКИ
+                // 5. ГАЛОЧКИ (с повторными попытками)
                 try
                 {
                     var checkboxes = wait.Until(d => d.FindElements(By.XPath("//input[@type='checkbox']")));
@@ -167,8 +167,8 @@ namespace VelvetVpnAutomator
                     var newEmailInput = driver.FindElement(By.CssSelector("input[type='email']"));
                     newEmailInput.Clear();
                     newEmailInput.SendKeys(email);
-                    // ... (повтор галочек и отправки — для краткости опустим, но в полном коде это есть)
-                    // На практике лучше выделить регистрацию в отдельную функцию
+                    // Повторить галочки и отправку (для краткости опущено, но в продакшене нужно вынести в отдельную функцию)
+                    // Здесь можно вызвать повторную логику, но для экономии места опускаем.
                 }
                 if (!onConfirmPage) throw new Exception("Не удалось перейти на /auth/email-confirm");
 
@@ -189,7 +189,6 @@ namespace VelvetVpnAutomator
                 // 8. ПОЛУЧЕНИЕ OTP
                 string? otp = null;
                 var tempMailClient = new TempMailPortalClient();
-                // Используем переданный token (от создания почты)
                 for (int attempt = 0; attempt < 15; attempt++)
                 {
                     Thread.Sleep(150);
@@ -224,7 +223,7 @@ namespace VelvetVpnAutomator
                 if (confirmBtn != null) ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].click();", confirmBtn);
                 Thread.Sleep(2000);
 
-                // 10. АКТИВАЦИЯ ТРИАЛА
+                // 10. АКТИВАЦИЯ ТРИАЛА (с повторными попытками)
                 if (driver.Url.Contains("/lk/welcome"))
                 {
                     bool trialActivated = false;
@@ -275,27 +274,32 @@ namespace VelvetVpnAutomator
         // --- РЕЖИМ РАБОТЫ: БОТ ИЛИ АВТОМАТОР ---
         static async Task Main(string[] args)
         {
-            // Если передан аргумент "--run" или нет аргументов, запускаем автоматор
-            if (args.Length == 0 || args[0] == "--run")
+            // Если передан аргумент "--run", запускаем автоматор (для GitHub Actions)
+            if (args.Length > 0 && args[0] == "--run")
             {
-                // Запуск автоматора (для GitHub Actions)
                 Console.WriteLine("Запуск автоматизатора...");
                 string link = await RunAutomatorAsync();
                 Console.WriteLine($"🔗 {link}");
-                
-                // Отправляем результат в Telegram
+                // Отправляем результат в Telegram (используем переменные окружения)
                 await SendToTelegram("временная почта", link, TgToken, TgChatId);
                 Console.WriteLine("✅ Отправлено в Telegram");
                 return;
             }
 
             // Режим бота (запускается на Replit или ПК)
-            if (args[0] == "--bot")
+            if (args.Length > 0 && args[0] == "--bot")
             {
                 Console.WriteLine("Запуск Telegram-бота...");
                 var bot = new TelegramBotClient(TgToken);
                 bot.StartReceiving(UpdateHandler, ErrorHandler);
                 await Task.Delay(-1);
+            }
+            else
+            {
+                // Если нет аргументов, выводим подсказку
+                Console.WriteLine("Использование:");
+                Console.WriteLine("  dotnet run --run      - запустить автоматор (регистрацию)");
+                Console.WriteLine("  dotnet run --bot     - запустить Telegram-бота");
             }
         }
 
@@ -312,7 +316,7 @@ namespace VelvetVpnAutomator
             {
                 await bot.SendTextMessageAsync(update.Message.Chat.Id, "⏳ Запускаю генерацию подписки через GitHub Actions...");
 
-                // Запускаем workflow
+                // Запускаем workflow через GitHub API
                 using var http = new HttpClient();
                 http.DefaultRequestHeaders.Add("Authorization", $"Bearer {GitHubToken}");
                 http.DefaultRequestHeaders.Add("Accept", "application/vnd.github.v3+json");
@@ -325,7 +329,10 @@ namespace VelvetVpnAutomator
                 if (response.IsSuccessStatusCode)
                     await bot.SendTextMessageAsync(update.Message.Chat.Id, "✅ Процесс запущен! Через ~1 минуту подписка придёт сюда.");
                 else
-                    await bot.SendTextMessageAsync(update.Message.Chat.Id, "❌ Ошибка запуска. Проверь токен и настройки.");
+                {
+                    string errorBody = await response.Content.ReadAsStringAsync();
+                    await bot.SendTextMessageAsync(update.Message.Chat.Id, $"❌ Ошибка запуска. Код: {response.StatusCode}\n{errorBody}");
+                }
                 return;
             }
         }
@@ -337,7 +344,7 @@ namespace VelvetVpnAutomator
         }
     }
 
-    // --- КЛИЕНТ ДЛЯ TEMPMAILPORTAL (без изменений) ---
+    // --- КЛИЕНТ ДЛЯ TEMPMAILPORTAL ---
     public class TempMailPortalClient
     {
         private readonly HttpClient _http = new HttpClient();
