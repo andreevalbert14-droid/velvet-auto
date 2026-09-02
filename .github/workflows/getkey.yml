@@ -1,13 +1,13 @@
 name: Get Velvet Key
 
 on:
-  workflow_dispatch:  # Запуск вручную через API
+  workflow_dispatch:
 
 jobs:
   generate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup .NET
@@ -20,9 +20,9 @@ jobs:
           sudo apt update
           sudo apt install -y chromium-browser chromium-chromedriver
 
-      - name: Run automation
+      - name: Run
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          dotnet run --project VelvetVpnAutomator
+          dotnet run --run
